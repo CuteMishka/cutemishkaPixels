@@ -7,8 +7,8 @@ const brushSize = document.getElementById("brushSize");
 const toggleGrid = document.getElementById("toggleGrid");
 const tools = document.querySelectorAll(".tool");
 
-const WIDTH = 1000;
-const HEIGHT = 1000;
+const WIDTH = 10000;
+const HEIGHT = 10000;
 let scale = 1;
 let offsetX = 0;
 let offsetY = 0;
