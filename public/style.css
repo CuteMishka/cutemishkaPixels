@@ -1,0 +1,112 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  font-family: "Inter", sans-serif;
+  margin: 0;
+  background: #f8f9fb;
+  color: #222;
+  display: flex;
+  height: 100vh;
+}
+
+.container {
+  display: flex;
+  width: 100%;
+  height: 100%;
+}
+
+.sidebar {
+  width: 280px;
+  background: white;
+  border-right: 1px solid #ddd;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+  box-shadow: 2px 0 10px rgba(0,0,0,0.05);
+}
+
+.sidebar h2 {
+  font-size: 18px;
+  margin-bottom: 10px;
+}
+
+.sidebar label {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+#colorPicker {
+  width: 100%;
+  height: 40px;
+  border: none;
+  cursor: pointer;
+  border-radius: 6px;
+}
+
+#brushSize {
+  width: 100%;
+}
+
+.tools {
+  display: flex;
+  gap: 10px;
+}
+
+.tool {
+  flex: 1;
+  padding: 8px 10px;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  background: #f3f3f3;
+  cursor: pointer;
+  transition: 0.2s;
+}
+
+.tool.active {
+  background: #007bff;
+  color: white;
+  border-color: #007bff;
+}
+
+.tool:hover {
+  background: #e0e0e0;
+}
+
+.hint {
+  margin-top: auto;
+  font-size: 12px;
+  color: #666;
+}
+
+.main {
+  flex: 1;
+  padding: 20px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.main h2 {
+  margin-bottom: 10px;
+}
+
+.canvas-wrapper {
+  flex: 1;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  background: white;
+  border-radius: 10px;
+  box-shadow: 0 4px 10px rgba(0,0,0,0.05);
+  overflow: hidden;
+}
+
+canvas {
+  border: 1px solid #ddd;
+  background: #fff;
+  image-rendering: pixelated;
+  cursor: crosshair;
+}

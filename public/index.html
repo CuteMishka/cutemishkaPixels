@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>cutemishka project</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="container">
+    <aside class="sidebar">
+      <h2>Управление холстом</h2>
+
+      <label>Цвет</label>
+      <input type="color" id="colorPicker" value="#ff0000">
+
+      <label>Размер кисти</label>
+      <input type="range" id="brushSize" min="1" max="10" value="1">
+
+      <label>Инструмент</label>
+      <div class="tools">
+        <button class="tool active" id="brush">Кисть</button>
+        <button class="tool" id="eraser">Ластик</button>
+      </div>
+
+      <label>
+        <input type="checkbox" id="toggleGrid" checked>
+        Показывать сетку
+      </label>
+
+      <div class="hint">
+        Масштаб: колесико мыши<br>
+        Перемещение: ПКМ
+      </div>
+    </aside>
+
+    <main class="main">
+      <h2>Холст</h2>
+      <div class="canvas-wrapper">
+        <canvas id="canvas" width="1000" height="1000"></canvas>
+      </div>
+    </main>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
