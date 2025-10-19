@@ -596,27 +596,6 @@ setInterval(() => {
 }, 80); // ~12.5Hz updates
 
 /* ---------- Server sync helpers ---------- */
-// when server broadcasts a stroke from others
-socket.on("stroke", (s) => {
-  if (!s || !Array.isArray(s.points)) return;
-  // server may supply strokeId, color, size
-  strokes.push({ strokeId: s.strokeId || null, points: s.points, color: s.color, size: s.size, isEraser: !!s.isEraser });
-  requestRedraw();
-});
-
-// server authoritative init (full state)
-socket.on("init", (arr) => {
-  if (!Array.isArray(arr)) return;
-  strokes = arr.map(s => ({ strokeId: s.strokeId || null, points: s.points, color: s.color, size: s.size, isEraser: !!s.isEraser }));
-  requestRedraw();
-});
-
-// server may ask to apply full pixels / state (compat)
-socket.on("applyPixels", (pixels) => {
-  // backward-compat: ignore if not array; else we don't implement pixel-level apply in this client (server handles tiles)
-  if (!Array.isArray(pixels)) return;
-});
-
 /* ---------- Initial request for state ---------- */
 socket.on("connect", () => {
   socket.emit("requestFullState"); // request authoritative strokes/tiles depending on server implementation
@@ -633,7 +612,10 @@ canvas.addEventListener("pointerup", () => { if (!isPanning) brushCursor.style.d
 canvas.addEventListener("pointerdown", () => { brushCursor.style.display = "none"; });
 // --- Отключаем стандартные контекстные и тач-меню браузера ---
 canvas.addEventListener("contextmenu", e => e.preventDefault());
-canvas.addEventListener("touchstart", e => e.preventDefault(), { passive: false });
-canvas.addEventListener("touchmove", e => e.preventDefault(), { passive: false });
-canvas.addEventListener("touchend", e => e.preventDefault(), { passive: false });
+// --- Отключаем стандартное контекстное меню, но не ломаем touch события ---
+canvas.addEventListener("contextmenu", e => e.preventDefault());
+canvas.addEventListener("pointerleave", () => { brushCursor.style.display = "none"; });
+canvas.addEventListener("pointerup", () => { if (!isPanning) brushCursor.style.display = "block"; });
+canvas.addEventListener("pointerdown", () => { brushCursor.style.display = "none"; });
+
 
