@@ -468,154 +468,70 @@ canvas.addEventListener("wheel", (e) => {
   offsetY = sy - before.y * scale;
   requestRedraw();
 }, { passive: false });
-/* ---------- Touch zoom (pinch) with smooth animation ---------- */
-let lastTouchDistance = 0;
-let targetScale = scale;
-let zoomAnimating = false;
+/* ---------- Mobile pinch-to-zoom + two-finger pan (stable version) ---------- */
+let touchState = {
+  lastDist: 0,
+  lastMid: null,
+  isPinching: false
+};
 
-function getTouchDistance(touches) {
-  const dx = touches[0].clientX - touches[1].clientX;
-  const dy = touches[0].clientY - touches[1].clientY;
-  return Math.sqrt(dx * dx + dy * dy);
+function getTouchesMid(touches) {
+  return {
+    x: (touches[0].clientX + touches[1].clientX) / 2,
+    y: (touches[0].clientY + touches[1].clientY) / 2
+  };
 }
 
-function smoothZoom() {
-  if (!zoomAnimating) return;
-  scale += (targetScale - scale) * 0.2; // плавное приближение
-  if (Math.abs(targetScale - scale) < 0.001) {
-    scale = targetScale;
-    zoomAnimating = false;
-  }
-  requestRedraw();
-  requestAnimationFrame(smoothZoom);
+function getTouchesDist(touches) {
+  const dx = touches[0].clientX - touches[1].clientX;
+  const dy = touches[0].clientY - touches[1].clientY;
+  return Math.hypot(dx, dy);
 }
 
 canvas.addEventListener("touchstart", (e) => {
   if (e.touches.length === 2) {
     e.preventDefault();
-    lastTouchDistance = getTouchDistance(e.touches);
+    touchState.isPinching = true;
+    touchState.lastDist = getTouchesDist(e.touches);
+    touchState.lastMid = getTouchesMid(e.touches);
   }
 }, { passive: false });
 
 canvas.addEventListener("touchmove", (e) => {
-  if (e.touches.length === 2) {
+  if (e.touches.length === 2 && touchState.isPinching) {
     e.preventDefault();
-    const newDistance = getTouchDistance(e.touches);
-    const zoomFactor = newDistance / lastTouchDistance;
-    lastTouchDistance = newDistance;
 
-    const rect = canvas.getBoundingClientRect();
-    const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left;
-    const midY = (e.touches[0].clientY + e.touches[1].clientY) / 2 - rect.top;
+    const newDist = getTouchesDist(e.touches);
+    const newMid = getTouchesMid(e.touches);
+    const distDelta = newDist - touchState.lastDist;
 
-    const worldX = (midX - offsetX) / scale;
-    const worldY = (midY - offsetY) / scale;
+    // определяем: зум или пан
+    const isZooming = Math.abs(distDelta) > 5;
 
-    targetScale = Math.min(Math.max(scale * zoomFactor, MIN_SCALE), MAX_SCALE);
-    offsetX = midX - worldX * targetScale;
-    offsetY = midY - worldY * targetScale;
-
-    if (!zoomAnimating) {
-      zoomAnimating = true;
-      requestAnimationFrame(smoothZoom);
+    if (isZooming) {
+      const zoomFactor = newDist / touchState.lastDist;
+      const before = screenToWorld(newMid.x, newMid.y);
+      scale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, scale * zoomFactor));
+      offsetX = newMid.x - before.x * scale;
+      offsetY = newMid.y - before.y * scale;
+    } else {
+      // пан с нормальным направлением и замедлением
+      const moveDX = newMid.x - touchState.lastMid.x;
+      const moveDY = newMid.y - touchState.lastMid.y;
+      offsetX += moveDX * 0.7; // плавнее
+      offsetY += moveDY * 0.7;
     }
+
+    touchState.lastDist = newDist;
+    touchState.lastMid = newMid;
+    requestRedraw();
   }
 }, { passive: false });
 
 canvas.addEventListener("touchend", (e) => {
   if (e.touches.length < 2) {
-    lastTouchDistance = 0;
-    zoomAnimating = false;
+    touchState.isPinching = false;
+    touchState.lastDist = 0;
+    touchState.lastMid = null;
   }
-}, { passive: false });
-/* ---------- Two-finger pan on mobile (без конфликта с pinch zoom) ---------- */
-/* ---------- Two-finger pan on mobile (финальная версия: корректное направление и плавность) ---------- */
-let prevMid = null;
-
-canvas.addEventListener("touchmove", (e) => {
-  if (e.touches.length === 2 && !zoomAnimating) {
-    const distNow = getTouchDistance(e.touches);
-
-    // если расстояние между пальцами сильно меняется — это зум, а не пан
-    if (Math.abs(lastTouchDistance - distNow) > 10) return;
-
-    e.preventDefault();
-
-    const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
-    const midY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
-
-    if (prevMid) {
-      const dx = midX - prevMid.x;
-      const dy = midY - prevMid.y;
-
-      // теперь движение совпадает с направлением пальцев
-      offsetX -= dx / scale * 0.5; 
-      offsetY -= dy / scale * 0.5;
-
-      requestRedraw();
-    }
-    prevMid = { x: midX, y: midY };
-  }
-}, { passive: false });
-
-canvas.addEventListener("touchend", () => { prevMid = null; });
-
-
-let spaceDown = false;
-window.addEventListener("keydown", (e) => {
-  if (e.code === "Space") { spaceDown = true; canvas.style.cursor = "grab"; e.preventDefault(); }
 });
-window.addEventListener("keyup", (e) => {
-  if (e.code === "Space") { spaceDown = false; canvas.style.cursor = "default"; }
-});
-
-/* ---------- UI hookups (color, size, eraser, undo) ---------- */
-document.getElementById("colorPicker")?.addEventListener("input", (e) => { brushColor = e.target.value; });
-document.getElementById("brushSize")?.addEventListener("input", (e) => { brushSize = Math.max(1, parseInt(e.target.value) || 1); requestRedraw(); });
-const eraserBtn = document.getElementById("eraser");
-const brushBtn = document.getElementById("brush");
-
-eraserBtn?.addEventListener("click", () => {
-  isEraser = true;
-  eraserBtn.classList.add("active");
-  brushBtn.classList.remove("active");
-});
-
-brushBtn?.addEventListener("click", () => {
-  isEraser = false;
-  brushBtn.classList.add("active");
-  eraserBtn.classList.remove("active");
-});
-
-document.getElementById("undoBtn")?.addEventListener("click", () => { socket.emit("undo"); }); // global undo
-
-/* ---------- Cursor broadcast (throttle) ---------- */
-setInterval(() => {
-  if (!lastPointerScreen) return;
-  socket.emit("cursor", { clientId: socket.id, x: lastPointerScreen.x, y: lastPointerScreen.y, color: brushColor, size: brushSize, isEraser: !!isEraser });
-}, 80); // ~12.5Hz updates
-
-/* ---------- Server sync helpers ---------- */
-/* ---------- Initial request for state ---------- */
-socket.on("connect", () => {
-  socket.emit("requestFullState"); // request authoritative strokes/tiles depending on server implementation
-});
-
-/* ---------- Utility: redraw on animation frame loop if requested ---------- */
-(function renderLoop() {
-  if (redrawPending) redraw();
-  requestAnimationFrame(renderLoop);
-})();
-canvas.addEventListener("contextmenu", (e) => e.preventDefault());
-canvas.addEventListener("pointerleave", () => { brushCursor.style.display = "none"; });
-canvas.addEventListener("pointerup", () => { if (!isPanning) brushCursor.style.display = "block"; });
-canvas.addEventListener("pointerdown", () => { brushCursor.style.display = "none"; });
-// --- Отключаем стандартные контекстные и тач-меню браузера ---
-canvas.addEventListener("contextmenu", e => e.preventDefault());
-// --- Отключаем стандартное контекстное меню, но не ломаем touch события ---
-canvas.addEventListener("contextmenu", e => e.preventDefault());
-canvas.addEventListener("pointerleave", () => { brushCursor.style.display = "none"; });
-canvas.addEventListener("pointerup", () => { if (!isPanning) brushCursor.style.display = "block"; });
-canvas.addEventListener("pointerdown", () => { brushCursor.style.display = "none"; });
-
-
