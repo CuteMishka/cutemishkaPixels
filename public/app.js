@@ -17,9 +17,7 @@ brushCursor.style.zIndex = "10000";
 brushCursor.style.display = "none";
 document.body.appendChild(brushCursor);
 
-// Нужна альфа для корректной работы destination-out (ластик)
 const ctx = canvas.getContext("2d", { alpha: true });
-
 
 function fitCanvasToWindow() {
   canvas.width = window.innerWidth;
@@ -28,33 +26,53 @@ function fitCanvasToWindow() {
 fitCanvasToWindow();
 window.addEventListener("resize", () => { fitCanvasToWindow(); requestRedraw(); });
 
-/* world transform (local to each client) */
-let scale = 1;                 // zoom (1 = 100%)
-let offsetX = 0, offsetY = 0;  // pan offset in screen pixels (applied after scale)
+/* world transform */
+let scale = 1;
+let offsetX = 0, offsetY = 0;
 const MIN_SCALE = 0.1, MAX_SCALE = 40;
 
 /* drawing state */
 let isPointerDown = false;
 let isPanning = false;
-let panStart = null; // хранит экранные координаты начала панорамирования
+let panStart = null;
 let isRightButton = false;
+let pointers = new Map();
+let lastPointerScreen = null;
+let currentStroke = null;
+let localStrokeIds = [];
 
-
-let pointers = new Map(); // active pointers by pointerId (for pinch)
-let lastPointerScreen = null; // last pointer screen coords for single-pointer drawing or pan
-let currentStroke = null;     // { points: [{x,y},...], color, size, isEraser }
-let localStrokeIds = [];      // local stack of strokeIds returned by server (for potential future local mapping)
-
-/* tool state (UI should set these) */
+/* tool state */
 let brushColor = "#000000";
 let brushSize = 6;
 let isEraser = false;
+/* UI controls (подключаем) */
+const colorPicker = document.getElementById("colorPicker");
+const brushSizeInput = document.getElementById("brushSize");
 
-/* authoritative strokes array (kept in sync with server via "init") */
-let strokes = []; // array of stroke objects { strokeId, points, color, size, isEraser }
+if (colorPicker) {
+  colorPicker.addEventListener("input", (e) => {
+    brushColor = e.target.value;
+  });
+}
+if (brushSizeInput) {
+  brushSizeInput.addEventListener("input", (e) => {
+    brushSize = Math.max(1, Number(e.target.value) || 1);
+    // обновляем визуальный курсор если он видим
+    if (brushCursor.style.display !== "none") {
+      const cursorSize = Math.max(6, brushSize);
+      brushCursor.style.width = cursorSize + "px";
+      brushCursor.style.height = cursorSize + "px";
+    }
+  });
+  // синхронизировать начальное значение
+  brushSize = Number(brushSizeInput.value) || brushSize;
+}
 
-/* other users cursors (transient) */
-const otherCursors = new Map(); // clientId -> { xScreen, yScreen, size, color, isEraser, lastSeen }
+/* authoritative strokes */
+let strokes = [];
+
+/* other users cursors */
+const otherCursors = new Map();
 
 /* redraw control */
 let redrawPending = false;
@@ -66,16 +84,12 @@ function requestRedraw() {
 }
 
 /* ---------- Coordinate helpers ---------- */
-/* Convert screen/client coordinates to world coordinates (absolute positions used for strokes)
-   worldX/worldY are in device pixels (no DPR adjustment necessary because both client and server
-   use same canvas pixel coords) */
 function screenToWorld(sx, sy) {
   const rect = canvas.getBoundingClientRect();
   const x = (sx - rect.left) * (canvas.width / rect.width);
   const y = (sy - rect.top) * (canvas.height / rect.height);
   return { x: (x - offsetX) / scale, y: (y - offsetY) / scale };
 }
-
 
 function worldToScreen(wx, wy) {
   const rect = canvas.getBoundingClientRect();
@@ -85,86 +99,57 @@ function worldToScreen(wx, wy) {
   };
 }
 
-
-
-
 /* ---------- Draw helpers ---------- */
 function drawStrokeToCtx(localCtx, stroke) {
   if (!stroke || !stroke.points || stroke.points.length === 0) return;
-
   localCtx.save();
   localCtx.lineJoin = "round";
   localCtx.lineCap = "round";
-
   if (stroke.isEraser) {
-    // destination-out реально удаляет пиксели (требует alpha: true у контекста)
     localCtx.globalCompositeOperation = "destination-out";
     localCtx.strokeStyle = "rgba(0,0,0,1)";
   } else {
     localCtx.globalCompositeOperation = "source-over";
     localCtx.strokeStyle = stroke.color;
   }
-
-  // НЕ умножаем на scale: transform уже применён на ctx перед вызовом drawStrokeToCtx
   localCtx.lineWidth = stroke.size;
-
   localCtx.beginPath();
   const pts = stroke.points;
   localCtx.moveTo(pts[0].x, pts[0].y);
-  for (let i = 1; i < pts.length; i++) {
-    localCtx.lineTo(pts[i].x, pts[i].y);
-  }
+  for (let i = 1; i < pts.length; i++) localCtx.lineTo(pts[i].x, pts[i].y);
   localCtx.stroke();
   localCtx.restore();
 }
 
-
-
-
-/* Full redraw: clear and re-render all strokes respecting current transform */
 function redraw() {
   redrawPending = false;
-  // clear
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.fillStyle = "#ffffff";
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-  // apply world transform
   ctx.setTransform(scale, 0, 0, scale, offsetX, offsetY);
+  for (const st of strokes) drawStrokeToCtx(ctx, st);
+  if (currentStroke) drawStrokeToCtx(ctx, currentStroke);
 
-  // draw strokes (in world coordinates)
-  for (const st of strokes) {
-    drawStrokeToCtx(ctx, st);
-  }
-
-  // draw current stroke (if drawing) on top (already in world coords)
-  if (currentStroke) {
-    drawStrokeToCtx(ctx, currentStroke);
-  }
-
-  // reset transform to draw overlay (screen-space)
   ctx.setTransform(1, 0, 0, 1, 0, 0);
-
-  // draw other users' cursors (screen-space)
   const now = Date.now();
   for (const [clientId, cur] of otherCursors.entries()) {
-    // remove stale cursors (not seen for 4s)
     if (now - cur.lastSeen > 4000) { otherCursors.delete(clientId); continue; }
-    // draw circle
     ctx.beginPath();
     ctx.strokeStyle = cur.isEraser ? "rgba(0,0,0,0.5)" : cur.color;
-    ctx.lineWidth = 2;
+    ctx.lineWidth = Math.max(1, brushSize);
+
     ctx.fillStyle = cur.isEraser ? "rgba(255,255,255,0.7)" : "rgba(0,0,0,0.05)";
     ctx.arc(cur.xScreen, cur.yScreen, Math.max(4, cur.size/2), 0, Math.PI*2);
     ctx.fill();
     ctx.stroke();
   }
 
-  // draw our local brush preview (screen-space)
   if (lastPointerScreen) {
     ctx.beginPath();
     ctx.strokeStyle = isEraser ? "rgba(0,0,0,0.6)" : brushColor;
-    ctx.lineWidth = 2;
+    ctx.lineWidth = Math.max(1, brushSize);
+
     ctx.fillStyle = isEraser ? "rgba(255,255,255,0.6)" : "rgba(0,0,0,0.04)";
     ctx.arc(lastPointerScreen.x, lastPointerScreen.y, Math.max(4, brushSize/2), 0, Math.PI*2);
     ctx.fill();
@@ -177,27 +162,13 @@ socket.on("connect", () => {
   console.log("socket connected", socket.id);
   socket.emit("requestFull");
 });
-
-socket.on("init", (arr) => {
-  // authoritative list of strokes (array)
-  if (!Array.isArray(arr)) return;
-  strokes = arr;
-  requestRedraw();
-});
-
-socket.on("stroke", (st) => {
-  if (!st || !Array.isArray(st.points)) return;
-  strokes.push(st);
-  requestRedraw();
-});
-
+socket.on("init", (arr) => { if (Array.isArray(arr)) { strokes = arr; requestRedraw(); } });
+socket.on("stroke", (st) => { if (st && Array.isArray(st.points)) { strokes.push(st); requestRedraw(); } });
 socket.on("cursor", (payload) => {
   if (!payload || !payload.clientId) return;
-  // payload: { clientId, x, y, color, size, isEraser }
-  const screen = { x: payload.x, y: payload.y };
   otherCursors.set(payload.clientId, {
-    xScreen: screen.x,
-    yScreen: screen.y,
+    xScreen: payload.x,
+    yScreen: payload.y,
     color: payload.color || "#000000",
     size: payload.size || 6,
     isEraser: !!payload.isEraser,
@@ -205,18 +176,11 @@ socket.on("cursor", (payload) => {
   });
   requestRedraw();
 });
+socket.on("cursor_remove", ({ clientId }) => { otherCursors.delete(clientId); requestRedraw(); });
 
-socket.on("cursor_remove", ({ clientId }) => {
-  otherCursors.delete(clientId);
-  requestRedraw();
-});
-
-/* ---------- Pointer / touch / wheel handling (uses Pointer Events) ---------- */
-canvas.style.touchAction = "none"; // prevent browser gestures
-let isPinching = false;
-let pinchStart = null;
-let lastScale = scale;
-
+/* ---------- Pointer handling ---------- */
+canvas.style.touchAction = "none";
+canvas.addEventListener("contextmenu", (e) => e.preventDefault());
 function getPointersCentroid() {
   let sx = 0, sy = 0, n = 0;
   for (const p of pointers.values()) { sx += p.clientX; sy += p.clientY; n++; }
@@ -227,215 +191,145 @@ function getPointersCentroid() {
 canvas.addEventListener("pointerdown", (e) => {
   canvas.setPointerCapture(e.pointerId);
   if (e.button === 2) {
-  isRightButton = true;
-  isPanning = true;
-  panStart = { x: e.clientX, y: e.clientY };
-  return;
-}
-
+    isRightButton = true;
+    isPanning = true;
+    panStart = { x: e.clientX, y: e.clientY };
+    return;
+  }
   pointers.set(e.pointerId, e);
   const pt = { x: e.clientX, y: e.clientY, id: e.pointerId };
 
-  if (pointers.size === 2) {
-    // start pinch
-    isPinching = true;
-    // record initial distance and midpoint
-    const it = Array.from(pointers.values());
-    const a = it[0], b = it[1];
-    const dx = b.clientX - a.clientX, dy = b.clientY - a.clientY;
-        pinchStart = { dist: Math.hypot(dx, dy), mid: { x: (a.clientX + b.clientX)/2, y: (a.clientY + b.clientY)/2 }, scaleStart: scale, offsetStart: { x: offsetX, y: offsetY } };
-    lastScale = scale;
+  // для тача — если не рисуем, то пан
+  if (e.pointerType === "touch" && e.buttons === 0) {
+    isPanning = true;
+    panStart = { x: e.clientX, y: e.clientY };
     return;
   }
-  // если один палец и не рисуем, включаем пан (например, два пальца — зум, один палец без рисования — пан)
-if (e.pointerType === "touch" && e.buttons === 0) {
-  isPanning = true;
-  panStart = { x: e.clientX, y: e.clientY };
-  return;
-}
 
-  // single-pointer start: decide draw vs pan (right button => pan)
   lastPointerScreen = { x: e.clientX, y: e.clientY, id: e.pointerId };
-  if (e.button === 2) { // right mouse -> pan
-    isPanning = true;
-  } else {
-    // start drawing stroke
+  if (e.button === 2) isPanning = true;
+  else {
     const w = screenToWorld(e.clientX, e.clientY);
-    currentStroke = { points: [ w ], color: isEraser ? "#ffffff" : brushColor, size: brushSize, isEraser: !!isEraser };
-    // send initial cursor so others see us
-    socket.emit("cursor", { clientId: socket.id, x: e.clientX, y: e.clientY, color: brushColor, size: brushSize, isEraser: !!isEraser });
+currentStroke = {
+  points: [ w ],
+  color: brushColor,         // цвет для обычной кисти (необязателен для ластика)
+  size: brushSize,           // <- важно
+  isEraser: !!isEraser
+};
+    socket.emit("cursor", { clientId: socket.id, x: e.clientX, y: e.clientY, color: brushColor, size: brushSize, isEraser });
   }
   requestRedraw();
 });
 
 canvas.addEventListener("pointermove", (e) => {
-  // показываем/обновляем белый кружок справа от курсора, если не в режиме панорамирования
-if (!isPanning) {
-  brushCursor.style.display = "block";
-  const rect = canvas.getBoundingClientRect();
-  // ставим немного правее курсора
-  brushCursor.style.left = (e.clientX + 12) + "px";
-  brushCursor.style.top = (e.clientY - (brushSize / 2)) + "px";
-  // размер в px — можно подогнать под визуал: здесь используем brushSize (в world units),
-  // но отображаем в screen pixels — подганяем через scale, но ограничиваем минимум
-  const cursorSize = Math.max(6, brushSize);
-  brushCursor.style.width = cursorSize + "px";
-  brushCursor.style.height = cursorSize + "px";
-  brushCursor.style.border = isEraser ? "2px solid red" : "2px solid white";
-} else {
-  brushCursor.style.display = "none";
-}
+  if (!isPanning) {
+    brushCursor.style.display = "block";
+    brushCursor.style.left = (e.clientX + 12) + "px";
+    brushCursor.style.top = (e.clientY - (brushSize / 2)) + "px";
+    const cursorSize = Math.max(6, brushSize);
+    brushCursor.style.width = cursorSize + "px";
+    brushCursor.style.height = cursorSize + "px";
+    brushCursor.style.border = isEraser ? "2px solid red" : "2px solid white";
+  } else brushCursor.style.display = "none";
 
   if (isPanning && isRightButton && panStart) {
-  const dx = e.clientX - panStart.x;
-  const dy = e.clientY - panStart.y;
-  offsetX += dx;
-  offsetY += dy;
-  panStart = { x: e.clientX, y: e.clientY };
-  requestRedraw();
-  return;
-}
-
-  if (!pointers.has(e.pointerId)) return;
-
-  pointers.set(e.pointerId, e);
-
-  // update last screen point for preview and cursor broadcasting
-  lastPointerScreen = { x: e.clientX, y: e.clientY };
-  // broadcast cursor occasionally (throttled by interval below) - we still update local preview immediately
-  requestRedraw();
-  if (isPanning && panStart) {
-  const dx = e.clientX - panStart.x;
-  const dy = e.clientY - panStart.y;
-  offsetX += dx;
-  offsetY += dy;
-  panStart = { x: e.clientX, y: e.clientY };
-  requestRedraw();
-  return;
-}
-
-  if (isPinching && pointers.size >= 2) {
-    // handle pinch zoom + translate to keep midpoint stable
-    const it = Array.from(pointers.values());
-    const a = it[0], b = it[1];
-    const dx = b.clientX - a.clientX, dy = b.clientY - a.clientY;
-    const dist = Math.hypot(dx, dy);
-    if (pinchStart && pinchStart.dist > 0) {
-      const factor = dist / pinchStart.dist;
-      const newScale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, pinchStart.scaleStart * factor));
-      // keep midpoint stable: convert pinchStart.mid screen -> world before, after adjust offset so the same world point stays at the same screen point
-      const mid = { x: (a.clientX + b.clientX)/2, y: (a.clientY + b.clientY)/2 };
-      const worldAtMid_before = screenToWorld(pinchStart.mid.x, pinchStart.mid.y);
-      scale = newScale;
-      // compute new offset to keep worldAtMid_before at same screen coords (mid)
-      offsetX = mid.x - worldAtMid_before.x * scale;
-      offsetY = mid.y - worldAtMid_before.y * scale;
-      requestRedraw();
-    }
-    return;
-  }
-
-  if (isPanning) {
-    // pan with mouse
-    if (lastPointerScreen) {
-      const dx = e.clientX - lastPointerScreen.x;
-      const dy = e.clientY - lastPointerScreen.y;
-      offsetX += dx;
-      offsetY += dy;
-      lastPointerScreen = { x: e.clientX, y: e.clientY, id: e.pointerId };
-      requestRedraw();
-    }
-    return;
-  }
-
-  // drawing with single pointer
-  if (currentStroke && !isPinching && !isPanning) {
-    const last = currentStroke.points[currentStroke.points.length - 1];
-    const world = screenToWorld(e.clientX, e.clientY);
-    // avoid pushing many identical points (throttle by pixel)
-    const dx = world.x - last.x, dy = world.y - last.y;
-    if ((dx*dx + dy*dy) >= 0.25) { // >0.5px move squared
-      currentStroke.points.push(world);
-      // draw incremental segment locally for smoothness (draw using world coords with transform)
-      // We'll draw directly onto main ctx (transform already applied in redraw), but for speed draw small segment:
-      ctx.setTransform(scale, 0, 0, scale, offsetX, offsetY);
-      drawStrokeToCtx(ctx, { points: [ last, world ], color: currentStroke.color, size: currentStroke.size, isEraser: currentStroke.isEraser });
-      // reset transform for overlays
-      ctx.setTransform(1,0,0,1,0,0);
-    }
-  }
-});
-/* ---------- Touch move (two-finger pan on mobile) ---------- */
-
-
-
-canvas.addEventListener("touchend", (e) => {
-  if (e.touches.length < 2) {
-    delete canvas.dataset.touchMidX;
-    delete canvas.dataset.touchMidY;
-  }
-});
-
-canvas.addEventListener("pointerup", (e) => {
-  
-  if (isRightButton) {
-  isRightButton = false;
-  isPanning = false;
-  panStart = null;
-  return;
-}
-
-  canvas.releasePointerCapture(e.pointerId);
-  pointers.delete(e.pointerId);
-  if (isPanning) {
-  isPanning = false;
-  panStart = null;
-}
-
-  if (pointers.size < 2 && isPinching) {
-    isPinching = false;
-    pinchStart = null;
-  }
-
-  if (isPanning && e.button === 2) {
-    isPanning = false;
-    lastPointerScreen = null;
+    const dx = e.clientX - panStart.x;
+    const dy = e.clientY - panStart.y;
+    offsetX += dx;
+    offsetY += dy;
+    panStart = { x: e.clientX, y: e.clientY };
     requestRedraw();
     return;
   }
 
-  // finish drawing if we had an active stroke and no more pointers (or pointer that started stroke ended)
-  if (currentStroke) {
-    // ensure at least two points (or single-point stroke)
-    if (currentStroke.points.length >= 1) {
-      // store authoritative stroke in local array immediately (server will broadcast back)
-      // mark a temporary strokeId = null until server acks
-      strokes.push({ strokeId: null, points: currentStroke.points.slice(), color: currentStroke.color, size: currentStroke.size, isEraser: !!currentStroke.isEraser });
-      requestRedraw();
-      // send to server
-      const strokeCopy = {
-  points: currentStroke.points.slice(),
-  color: currentStroke.color,
-  size: currentStroke.size,
-  isEraser: !!currentStroke.isEraser
-};
-socket.emit("stroke", strokeCopy, (ack) => {
-  if (ack && ack.strokeId) {
-    for (let i = strokes.length - 1; i >= 0; i--) {
-      if (strokes[i].strokeId === null && strokes[i].points.length === strokeCopy.points.length) {
-        strokes[i].strokeId = ack.strokeId;
-        break;
-      }
+  if (!pointers.has(e.pointerId)) return;
+  pointers.set(e.pointerId, e);
+  lastPointerScreen = { x: e.clientX, y: e.clientY };
+  requestRedraw();
+
+  if (isPanning && panStart) {
+    const dx = e.clientX - panStart.x;
+    const dy = e.clientY - panStart.y;
+    offsetX += dx;
+    offsetY += dy;
+    panStart = { x: e.clientX, y: e.clientY };
+    requestRedraw();
+    return;
+  }
+
+  if (currentStroke && !isPanning) {
+    const last = currentStroke.points[currentStroke.points.length - 1];
+    const world = screenToWorld(e.clientX, e.clientY);
+    const dx = world.x - last.x, dy = world.y - last.y;
+    if ((dx*dx + dy*dy) >= 0.25) {
+      currentStroke.points.push(world);
+      ctx.setTransform(scale, 0, 0, scale, offsetX, offsetY);
+      drawStrokeToCtx(ctx, { points: [last, world], color: currentStroke.color, size: currentStroke.size, isEraser: currentStroke.isEraser });
+      ctx.setTransform(1,0,0,1,0,0);
     }
   }
 });
 
-      // push server-global undo stack is handled server-side; client keeps visual strokes array in sync via 'init' or 'stroke' events
+/* ---------- Two-finger pan (no pinch zoom) ---------- */
+let panTouches = [];
+canvas.addEventListener("touchstart", (e) => {
+  if (e.touches.length === 2) {
+    e.preventDefault();
+    panTouches = [
+      { x: e.touches[0].clientX, y: e.touches[0].clientY },
+      { x: e.touches[1].clientX, y: e.touches[1].clientY }
+    ];
+  }
+}, { passive: false });
+
+canvas.addEventListener("touchmove", (e) => {
+  if (e.touches.length === 2 && panTouches.length === 2) {
+    e.preventDefault();
+    const t1 = e.touches[0], t2 = e.touches[1];
+    const prevMid = { x: (panTouches[0].x + panTouches[1].x) / 2, y: (panTouches[0].y + panTouches[1].y) / 2 };
+    const newMid = { x: (t1.clientX + t2.clientX) / 2, y: (t1.clientY + t2.clientY) / 2 };
+    const dx = newMid.x - prevMid.x;
+    const dy = newMid.y - prevMid.y;
+    offsetX += dx;
+    offsetY += dy;
+    requestRedraw();
+    panTouches = [
+      { x: t1.clientX, y: t1.clientY },
+      { x: t2.clientX, y: t2.clientY }
+    ];
+  }
+}, { passive: false });
+
+canvas.addEventListener("touchend", () => { panTouches = []; });
+
+canvas.addEventListener("pointerup", (e) => {
+  if (isRightButton) {
+    isRightButton = false;
+    isPanning = false;
+    panStart = null;
+    return;
+  }
+  canvas.releasePointerCapture(e.pointerId);
+  pointers.delete(e.pointerId);
+  if (isPanning) { isPanning = false; panStart = null; }
+  if (currentStroke) {
+    if (currentStroke.points.length >= 1) {
+      strokes.push({ strokeId: null, points: currentStroke.points.slice(), color: currentStroke.color, size: currentStroke.size, isEraser: currentStroke.isEraser });
+      requestRedraw();
+      const strokeCopy = { points: currentStroke.points.slice(), color: currentStroke.color, size: currentStroke.size, isEraser: currentStroke.isEraser };
+      socket.emit("stroke", strokeCopy, (ack) => {
+        if (ack && ack.strokeId) {
+          for (let i = strokes.length - 1; i >= 0; i--) {
+            if (strokes[i].strokeId === null && strokes[i].points.length === strokeCopy.points.length) {
+              strokes[i].strokeId = ack.strokeId;
+              break;
+            }
+          }
+        }
+      });
     }
     currentStroke = null;
   }
-
-  // send cursor removal for this pointer if none left
   if (pointers.size === 0) {
     socket.emit("cursor_remove", { clientId: socket.id });
     lastPointerScreen = null;
@@ -447,7 +341,6 @@ canvas.addEventListener("pointercancel", (e) => {
   pointers.delete(e.pointerId);
   if (pointers.size === 0) {
     currentStroke = null;
-    isPinching = false;
     isPanning = false;
     socket.emit("cursor_remove", { clientId: socket.id });
     lastPointerScreen = null;
@@ -455,83 +348,40 @@ canvas.addEventListener("pointercancel", (e) => {
   }
 });
 
-/* wheel -> zoom at cursor (mouse wheel) */
+/* wheel zoom */
 canvas.addEventListener("wheel", (e) => {
   e.preventDefault();
-  const rect = canvas.getBoundingClientRect();
   const sx = e.clientX, sy = e.clientY;
   const before = screenToWorld(sx, sy);
   const factor = e.deltaY < 0 ? 1.12 : 0.88;
   scale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, scale * factor));
-  // after scaling, set offset so that world point 'before' remains under cursor
   offsetX = sx - before.x * scale;
   offsetY = sy - before.y * scale;
   requestRedraw();
 }, { passive: false });
-/* ---------- Mobile pinch-to-zoom + two-finger pan (stable version) ---------- */
-let touchState = {
-  lastDist: 0,
-  lastMid: null,
-  isPinching: false
-};
 
-function getTouchesMid(touches) {
-  return {
-    x: (touches[0].clientX + touches[1].clientX) / 2,
-    y: (touches[0].clientY + touches[1].clientY) / 2
-  };
-}
+/* ---------- Zoom buttons ---------- */
+const zoomInBtn = document.getElementById("zoomInBtn");
+const zoomOutBtn = document.getElementById("zoomOutBtn");
 
-function getTouchesDist(touches) {
-  const dx = touches[0].clientX - touches[1].clientX;
-  const dy = touches[0].clientY - touches[1].clientY;
-  return Math.hypot(dx, dy);
-}
-
-canvas.addEventListener("touchstart", (e) => {
-  if (e.touches.length === 2) {
-    e.preventDefault();
-    touchState.isPinching = true;
-    touchState.lastDist = getTouchesDist(e.touches);
-    touchState.lastMid = getTouchesMid(e.touches);
-  }
-}, { passive: false });
-
-canvas.addEventListener("touchmove", (e) => {
-  if (e.touches.length === 2 && touchState.isPinching) {
-    e.preventDefault();
-
-    const newDist = getTouchesDist(e.touches);
-    const newMid = getTouchesMid(e.touches);
-    const distDelta = newDist - touchState.lastDist;
-
-    // определяем: зум или пан
-    const isZooming = Math.abs(distDelta) > 5;
-
-    if (isZooming) {
-      const zoomFactor = newDist / touchState.lastDist;
-      const before = screenToWorld(newMid.x, newMid.y);
-      scale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, scale * zoomFactor));
-      offsetX = newMid.x - before.x * scale;
-      offsetY = newMid.y - before.y * scale;
-    } else {
-      // пан с нормальным направлением и замедлением
-      const moveDX = newMid.x - touchState.lastMid.x;
-      const moveDY = newMid.y - touchState.lastMid.y;
-      offsetX += moveDX * 0.7; // плавнее
-      offsetY += moveDY * 0.7;
-    }
-
-    touchState.lastDist = newDist;
-    touchState.lastMid = newMid;
+if (zoomInBtn && zoomOutBtn) {
+  zoomInBtn.addEventListener("click", () => {
+    const factor = 1.2;
+    const cx = window.innerWidth / 2, cy = window.innerHeight / 2;
+    const before = screenToWorld(cx, cy);
+    scale = Math.min(MAX_SCALE, scale * factor);
+    offsetX = cx - before.x * scale;
+    offsetY = cy - before.y * scale;
     requestRedraw();
-  }
-}, { passive: false });
+  });
 
-canvas.addEventListener("touchend", (e) => {
-  if (e.touches.length < 2) {
-    touchState.isPinching = false;
-    touchState.lastDist = 0;
-    touchState.lastMid = null;
-  }
-});
+  zoomOutBtn.addEventListener("click", () => {
+    const factor = 1 / 1.2;
+    const cx = window.innerWidth / 2, cy = window.innerHeight / 2;
+    const before = screenToWorld(cx, cy);
+    scale = Math.max(MIN_SCALE, scale * factor);
+    offsetX = cx - before.x * scale;
+    offsetY = cy - before.y * scale;
+    requestRedraw();
+  });
+}

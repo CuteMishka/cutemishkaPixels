@@ -84,3 +84,28 @@ canvas {
   -webkit-user-select: none;
   user-select: none;
 }
+.zoom-controls {
+  position: fixed;
+  bottom: 20px;
+  left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  z-index: 50;
+}
+
+.zoom-controls button {
+  width: 44px;
+  height: 44px;
+  font-size: 22px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.7);
+  color: white;
+  cursor: pointer;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+}
+
+.zoom-controls button:active {
+  transform: scale(0.95);
+}
