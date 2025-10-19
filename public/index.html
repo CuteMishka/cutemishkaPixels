@@ -1,10 +1,10 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>cutemishka project</title>
-  <link rel="stylesheet" href="style.css">
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Совместный холст</title>
+  <link rel="stylesheet" href="style.css" />
 </head>
 <body>
   <button id="menuToggle" class="menu-toggle">☰</button>
@@ -17,7 +17,7 @@
       <input type="color" id="colorPicker" value="#ff0000">
 
       <label>Размер кисти</label>
-      <input type="range" id="brushSize" min="1" max="10" value="1">
+      <input type="range" id="brushSize" min="1" max="50" value="6">
 
       <label>Инструмент</label>
       <div class="tools">
@@ -30,16 +30,21 @@
         Показывать сетку
       </label>
 
+      <div class="row">
+        <button id="undoBtn" class="btn">Отменить (Undo)</button>
+        <div class="hint">Ctrl/Cmd+Z</div>
+      </div>
+
       <div class="hint">
-        Масштаб: колесико мыши<br>
-        Перемещение: ПКМ / двумя пальцами
+        Масштаб: колесико мыши / pinch<br>
+        Перемещение: ПКМ или двумя пальцами
       </div>
     </aside>
 
     <main class="main">
       <h2>Холст</h2>
       <div class="canvas-wrapper">
-        <canvas id="canvas" width="1000" height="1000"></canvas>
+        <canvas id="canvas"></canvas>
       </div>
     </main>
   </div>

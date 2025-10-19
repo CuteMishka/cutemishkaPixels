@@ -1,49 +1,114 @@
+// server.js
 import express from "express";
-import { createServer } from "http";
+import http from "http";
 import { Server } from "socket.io";
+import path from "path";
+import { fileURLToPath } from "url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
-const server = createServer(app);
-const io = new Server(server);
+const server = http.createServer(app);
+const io = new Server(server, {
+  // по умолчанию нормально; можно настроить CORS если нужно
+  // maxHttpBufferSize: 1e6
+});
 
-const PORT = 3000;
+app.use(express.static(path.join(__dirname, "public")));
 
-// Размер холста
-const WIDTH = 1000;
-const HEIGHT = 1000;
+// ---- Config ----
+const PORT = process.env.PORT || 3000;
+const MAX_STROKES = 5000; // мягкий cap: сколько всего хранить на сервере
+const PRUNE_TO = 4000;    // при переполнении обрезаем до этого количества
 
-// Храним закрашенные пиксели
-// Ключ: "x,y" → значение: "#RRGGBB"
-const pixels = new Map();
+// ---- Storage: strokes map ----
+// strokes: Map<strokeId -> { strokeId, clientId, points: [{x,y}], color, size, isEraser }>
+const strokes = new Map();
+let strokeCounter = 1;
 
-app.use(express.static("public"));
+// Helper: produce array of strokes (ordered by strokeId ascending)
+function getAllStrokesArray() {
+  return Array.from(strokes.values()).sort((a, b) => a.strokeId - b.strokeId);
+}
 
-io.on("connection", (socket) => {
-  console.log("🟢 Новый пользователь подключился:", socket.id);
+// Prune oldest strokes if too many
+function ensureSizeLimit() {
+  if (strokes.size <= MAX_STROKES) return;
+  const arr = getAllStrokesArray();
+  const toRemove = arr.length - PRUNE_TO;
+  for (let i = 0; i < toRemove; i++) {
+    strokes.delete(arr[i].strokeId);
+  }
+}
 
-  // Отправляем уже существующие пиксели новому пользователю
-  socket.emit("init", Array.from(pixels.entries()));
+// ---- Socket.IO handlers ----
+io.on("connection", socket => {
+  console.log("Client connected:", socket.id);
 
-  // Когда кто-то рисует
-  socket.on("drawPixel", (data) => {
-    const key = `${data.x},${data.y}`;
-    pixels.set(key, data.color);
+  // send current authoritative strokes list
+  socket.emit("init", getAllStrokesArray());
 
-    // Рассылаем другим
-    socket.broadcast.emit("drawPixel", data);
+  // client sends a stroke
+  // payload: { points: [{x,y},...], color, size, isEraser }
+  socket.on("stroke", (payload, ack) => {
+    try {
+      if (!payload || !Array.isArray(payload.points) || payload.points.length === 0) {
+        if (ack) ack({ ok: false, reason: "bad payload" });
+        return;
+      }
+      const strokeId = strokeCounter++;
+      const st = {
+        strokeId,
+        clientId: socket.id,
+        points: payload.points,
+        color: payload.color || "#000000",
+        size: Math.max(1, Math.min(200, payload.size || 4)),
+        isEraser: !!payload.isEraser,
+        t: Date.now()
+      };
+      strokes.set(strokeId, st);
+      ensureSizeLimit();
+      // broadcast to others
+      socket.broadcast.emit("stroke", st);
+      if (ack) ack({ ok: true, strokeId });
+    } catch (err) {
+      console.error("stroke error:", err);
+      if (ack) ack({ ok: false, reason: "exception" });
+    }
   });
 
-  // Очистка холста
-  socket.on("clearCanvas", () => {
-    pixels.clear();
-    io.emit("clearCanvas");
+  // cursor / pointer update from client (throttled on client)
+  // payload: { x,y, color, size, isEraser }
+  socket.on("cursor", (payload) => {
+    // broadcast to others, but don't persist
+    socket.broadcast.emit("cursor", { clientId: socket.id, ...payload });
+  });
+
+  // Undo: request to remove last stroke by this client OR globally?
+  // We agreed: undo is global (user triggers undo -> remove last stroke globally)
+  socket.on("undo", () => {
+    // pop the last stroke (highest strokeId)
+    const arr = getAllStrokesArray();
+    if (arr.length === 0) return;
+    const last = arr[arr.length - 1];
+    strokes.delete(last.strokeId);
+    // send new authoritative list
+    io.emit("init", getAllStrokesArray());
+  });
+
+  // client requested full re-sync
+  socket.on("requestFull", () => {
+    socket.emit("init", getAllStrokesArray());
   });
 
   socket.on("disconnect", () => {
-    console.log("🔴 Пользователь отключился:", socket.id);
+    // notify others to remove cursors for this client
+    socket.broadcast.emit("cursor_remove", { clientId: socket.id });
+    console.log("Client disconnected:", socket.id);
   });
 });
 
 server.listen(PORT, () => {
-  console.log(`🚀 Сервер запущен: http://localhost:${PORT}`);
+  console.log(`Server listening at http://localhost:${PORT}`);
 });
