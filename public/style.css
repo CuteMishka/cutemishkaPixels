@@ -65,3 +65,17 @@ canvas { background:#fff; border:1px solid #ddd; image-rendering: pixelated; cur
   .main { padding: 10px; }
   canvas { width: 95vw; height: 95vw; } /* keep square fit on mobile */
 }
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+canvas {
+  display: block;
+  width: 100vw;
+  height: 100vh;
+  touch-action: none;
+  background: white;
+}

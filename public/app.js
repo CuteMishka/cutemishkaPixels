@@ -531,7 +531,7 @@ canvas.addEventListener("touchend", (e) => {
 /* ---------- Two-finger pan on mobile (без конфликта с pinch zoom) ---------- */
 let prevMid = null;
 
-canvas.addEventListener("touchmove", (e) => {
+ccanvas.addEventListener("touchmove", (e) => {
   if (e.touches.length === 2 && !zoomAnimating) {
     if (Math.abs(lastTouchDistance - getTouchDistance(e.touches)) > 5) return; 
     e.preventDefault();
@@ -539,13 +539,20 @@ canvas.addEventListener("touchmove", (e) => {
     const midY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
 
     if (prevMid) {
-      offsetX += (midX - prevMid.x);
-      offsetY += (midY - prevMid.y);
+      // Снижаем чувствительность и учитываем масштаб
+      const dx = (midX - prevMid.x) / scale;
+      const dy = (midY - prevMid.y) / scale;
+
+      // Плавное движение (интерполяция)
+      offsetX += dx * 0.7;
+      offsetY += dy * 0.7;
+
       requestRedraw();
     }
     prevMid = { x: midX, y: midY };
   }
 }, { passive: false });
+
 
 canvas.addEventListener("touchend", () => { prevMid = null; });
 
