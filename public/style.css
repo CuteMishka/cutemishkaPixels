@@ -79,3 +79,8 @@ canvas {
   touch-action: none;
   background: white;
 }
+canvas {
+  -webkit-touch-callout: none; /* запрещает вызов меню в iOS Safari */
+  -webkit-user-select: none;
+  user-select: none;
+}

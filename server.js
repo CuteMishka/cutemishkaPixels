@@ -109,6 +109,9 @@ io.on("connection", socket => {
   });
 });
 
-server.listen(PORT, () => {
-  console.log(`Server listening at http://localhost:${PORT}`);
+server.listen(PORT, "0.0.0.0", () => {
+  console.log("✅ Server running at:");
+  console.log(`→ http://localhost:${PORT} (на этом компьютере)`);
+  console.log(`→ http://26.4.244.209:${PORT} (для телефона в той же сети)`);
 });
+

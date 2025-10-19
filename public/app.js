@@ -529,23 +529,28 @@ canvas.addEventListener("touchend", (e) => {
   }
 }, { passive: false });
 /* ---------- Two-finger pan on mobile (без конфликта с pinch zoom) ---------- */
+/* ---------- Two-finger pan on mobile (финальная версия: корректное направление и плавность) ---------- */
 let prevMid = null;
 
-ccanvas.addEventListener("touchmove", (e) => {
+canvas.addEventListener("touchmove", (e) => {
   if (e.touches.length === 2 && !zoomAnimating) {
-    if (Math.abs(lastTouchDistance - getTouchDistance(e.touches)) > 5) return; 
+    const distNow = getTouchDistance(e.touches);
+
+    // если расстояние между пальцами сильно меняется — это зум, а не пан
+    if (Math.abs(lastTouchDistance - distNow) > 10) return;
+
     e.preventDefault();
+
     const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
     const midY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
 
     if (prevMid) {
-      // Снижаем чувствительность и учитываем масштаб
-      const dx = (midX - prevMid.x) / scale;
-      const dy = (midY - prevMid.y) / scale;
+      const dx = midX - prevMid.x;
+      const dy = midY - prevMid.y;
 
-      // Плавное движение (интерполяция)
-      offsetX += dx * 0.7;
-      offsetY += dy * 0.7;
+      // теперь движение совпадает с направлением пальцев
+      offsetX -= dx / scale * 0.5; 
+      offsetY -= dy / scale * 0.5;
 
       requestRedraw();
     }
@@ -553,8 +558,8 @@ ccanvas.addEventListener("touchmove", (e) => {
   }
 }, { passive: false });
 
-
 canvas.addEventListener("touchend", () => { prevMid = null; });
+
 
 let spaceDown = false;
 window.addEventListener("keydown", (e) => {
@@ -626,3 +631,9 @@ canvas.addEventListener("contextmenu", (e) => e.preventDefault());
 canvas.addEventListener("pointerleave", () => { brushCursor.style.display = "none"; });
 canvas.addEventListener("pointerup", () => { if (!isPanning) brushCursor.style.display = "block"; });
 canvas.addEventListener("pointerdown", () => { brushCursor.style.display = "none"; });
+// --- Отключаем стандартные контекстные и тач-меню браузера ---
+canvas.addEventListener("contextmenu", e => e.preventDefault());
+canvas.addEventListener("touchstart", e => e.preventDefault(), { passive: false });
+canvas.addEventListener("touchmove", e => e.preventDefault(), { passive: false });
+canvas.addEventListener("touchend", e => e.preventDefault(), { passive: false });
+
