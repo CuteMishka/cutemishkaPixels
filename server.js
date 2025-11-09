@@ -11,19 +11,20 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
-  // по умолчанию нормально; можно настроить CORS если нужно
-  // maxHttpBufferSize: 1e6
+  cors: {
+    origin: "*",
+    methods: ["GET", "POST"]
+  }
 });
 
 app.use(express.static(path.join(__dirname, "public")));
 
 // ---- Config ----
 const PORT = process.env.PORT || 3000;
-const MAX_STROKES = 5000; // мягкий cap: сколько всего хранить на сервере
-const PRUNE_TO = 4000;    // при переполнении обрезаем до этого количества
+const MAX_STROKES = 5000;
+const PRUNE_TO = 4000;
 
 // ---- Storage: strokes map ----
-// strokes: Map<strokeId -> { strokeId, clientId, points: [{x,y}], color, size, isEraser }>
 const strokes = new Map();
 let strokeCounter = 1;
 
@@ -46,31 +47,34 @@ function ensureSizeLimit() {
 io.on("connection", socket => {
   console.log("Client connected:", socket.id);
 
-  // send current authoritative strokes list
+  // Send current authoritative strokes list
   socket.emit("init", getAllStrokesArray());
 
-  // client sends a stroke
-  // payload: { points: [{x,y},...], color, size, isEraser }
+  // Client sends a stroke
   socket.on("stroke", (payload, ack) => {
     try {
       if (!payload || !Array.isArray(payload.points) || payload.points.length === 0) {
         if (ack) ack({ ok: false, reason: "bad payload" });
         return;
       }
+      
       const strokeId = strokeCounter++;
       const st = {
         strokeId,
-        clientId: socket.id,
+        clientId: payload.clientId || socket.id,
         points: payload.points,
         color: payload.color || "#000000",
-        size: Math.max(1, Math.min(200, payload.size || 4)),
+        size: Math.max(1, Math.min(200, payload.size || 6)),
         isEraser: !!payload.isEraser,
         t: Date.now()
       };
+      
       strokes.set(strokeId, st);
       ensureSizeLimit();
-      // broadcast to others
+      
+      // Broadcast to others
       socket.broadcast.emit("stroke", st);
+      
       if (ack) ack({ ok: true, strokeId });
     } catch (err) {
       console.error("stroke error:", err);
@@ -78,32 +82,44 @@ io.on("connection", socket => {
     }
   });
 
-  // cursor / pointer update from client (throttled on client)
-  // payload: { x,y, color, size, isEraser }
+  // Cursor update from client
   socket.on("cursor", (payload) => {
-    // broadcast to others, but don't persist
     socket.broadcast.emit("cursor", { clientId: socket.id, ...payload });
   });
 
-  // Undo: request to remove last stroke by this client OR globally?
-  // We agreed: undo is global (user triggers undo -> remove last stroke globally)
-  socket.on("undo", () => {
-    // pop the last stroke (highest strokeId)
-    const arr = getAllStrokesArray();
-    if (arr.length === 0) return;
-    const last = arr[arr.length - 1];
-    strokes.delete(last.strokeId);
-    // send new authoritative list
+  // Cursor remove
+  socket.on("cursor_remove", (payload) => {
+    socket.broadcast.emit("cursor_remove", { clientId: socket.id });
+  });
+
+  // Undo: remove last stroke by THIS client only
+  socket.on("undo", (payload) => {
+    const clientId = payload?.clientId || socket.id;
+    
+    // Find all strokes by this client
+    const clientStrokes = getAllStrokesArray().filter(st => st.clientId === clientId);
+    
+    if (clientStrokes.length === 0) {
+      console.log(`No strokes to undo for client ${clientId}`);
+      return;
+    }
+    
+    // Remove the last stroke by this client
+    const lastStroke = clientStrokes[clientStrokes.length - 1];
+    strokes.delete(lastStroke.strokeId);
+    
+    console.log(`Undo: removed stroke ${lastStroke.strokeId} by client ${clientId}`);
+    
+    // Send updated list to everyone
     io.emit("init", getAllStrokesArray());
   });
 
-  // client requested full re-sync
+  // Client requested full re-sync
   socket.on("requestFull", () => {
     socket.emit("init", getAllStrokesArray());
   });
 
   socket.on("disconnect", () => {
-    // notify others to remove cursors for this client
     socket.broadcast.emit("cursor_remove", { clientId: socket.id });
     console.log("Client disconnected:", socket.id);
   });
@@ -114,4 +130,3 @@ server.listen(PORT, "0.0.0.0", () => {
   console.log(`→ http://localhost:${PORT} (на этом компьютере)`);
   console.log(`→ http://26.4.244.209:${PORT} (для телефона в той же сети)`);
 });
-
